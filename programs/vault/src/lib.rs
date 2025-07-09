@@ -4,7 +4,7 @@ use anchor_lang::{
     system_program::{transfer, Transfer},
 };
 
-declare_id!("EodSMyDA8eeKfUaVqNy6y8F7wF2JB2fgHjofphnff1Gy");
+declare_id!("GGgkefrdAYGWEK7tWzUKrJYMZo8bJ3rQQoX4v8n1CjCt");
 
 #[program]
 pub mod vault {
