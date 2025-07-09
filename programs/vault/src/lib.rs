@@ -22,7 +22,7 @@ pub mod vault {
         ctx.accounts.withdraw(amount)
     }
 
-    pub fn close(ctx:Context<Close>)->Result<()>{
+    pub fn close(ctx: Context<Close>) -> Result<()> {
         ctx.accounts.close()
     }
 }
@@ -34,7 +34,8 @@ pub struct Initialize<'info> {
     pub signer: Signer<'info>,
 
     #[account(
-        seeds = [b"vault" , vault_state.key().as_ref()],
+        mut,
+        seeds = [b"vault", vault_state.key().as_ref()],
         bump
     )]
     pub vault: SystemAccount<'info>,
@@ -43,7 +44,7 @@ pub struct Initialize<'info> {
         init,
         payer = signer,
         space = VaultState::INIT_SPACE + 8,
-        seeds = [b"state" , signer.key().as_ref()],
+        seeds = [b"state", signer.key().as_ref()],
         bump
     )]
     pub vault_state: Account<'info, VaultState>,
@@ -65,7 +66,7 @@ pub struct Deposit<'info> {
     pub vault: SystemAccount<'info>,
 
     #[account(
-        seeds = [b"state" , signer.key().as_ref()],
+        seeds = [b"state", signer.key().as_ref()],
         bump = vault_state.state_bump
     )]
     pub vault_state: Account<'info, VaultState>,
@@ -85,7 +86,7 @@ pub struct Withdraw<'info> {
     pub vault: SystemAccount<'info>,
 
     #[account(
-        seeds = [b"state" , signer.key().as_ref()],
+        seeds = [b"state", signer.key().as_ref()],
         bump = vault_state.state_bump
     )]
     pub vault_state: Account<'info, VaultState>,
@@ -104,9 +105,10 @@ pub struct Close<'info> {
     )]
     pub vault: SystemAccount<'info>,
 
+    // here mut, and close = signer will be added
     #[account(
         mut,
-        seeds = [b"state" , signer.key().as_ref()],
+        seeds = [b"state", signer.key().as_ref()],
         bump = vault_state.state_bump,
         close = signer
     )]
@@ -115,38 +117,54 @@ pub struct Close<'info> {
 }
 
 impl<'info> Initialize<'info> {
+    // here initialize bumps will give us the bumps in the Initialize context accounts
     pub fn initialize(&mut self, bumps: &InitializeBumps) -> Result<()> {
         self.vault_state.state_bump = bumps.vault_state;
         self.vault_state.vault_bump = bumps.vault;
-        Ok(())
-    }
-}
 
-// we don't need to sign for every instruction because the runtime keeps track of who signed the transaction
-impl<'info> Deposit<'info> {
-    pub fn deposit(&mut self, amount: u64) -> Result<()> {
+        // Fund the vault with minimum rent-exempt balance
+        // Use 0 for SystemAccount data length, not vault_state data length
+        let rent_exempt = Rent::get()?.minimum_balance(0);
         let cpi_program = self.system_program.to_account_info();
-
-        let cpi_account = Transfer {
+        let cpi_accounts = Transfer {
             from: self.signer.to_account_info(),
             to: self.vault.to_account_info(),
         };
 
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_account);
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        transfer(cpi_ctx, rent_exempt)
+    }
+}
 
+impl<'info> Deposit<'info> {
+    pub fn deposit(&mut self, amount: u64) -> Result<()> {
+        let cpi_program = self.system_program.to_account_info();
+        let cpi_account = Transfer {
+            from: self.signer.to_account_info(),
+            to: self.vault.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_account);
         transfer(cpi_ctx, amount)
     }
 }
 
 impl<'info> Withdraw<'info> {
     pub fn withdraw(&mut self, amount: u64) -> Result<()> {
+        // Check if vault has enough balance after maintaining rent exemption
+        let rent_exempt = Rent::get()?.minimum_balance(0);
+        let vault_balance = self.vault.to_account_info().lamports();
+        
+        require!(
+            vault_balance >= amount + rent_exempt,
+            VaultError::InsufficientFunds
+        );
+
         let cpi_program = self.system_program.to_account_info();
         let cpi_account = Transfer {
             from: self.vault.to_account_info(),
             to: self.signer.to_account_info(),
         };
 
-        // since the pda cannot sign transactions for itself therefore we need signer seeds here in order to make the program sign transactions for the pda
         let binding = self.vault_state.key();
         let seeds = &[
             b"vault",
@@ -186,7 +204,6 @@ impl<'info> Close<'info> {
     }
 }
 
-
 // data structure for vaultstate
 #[account]
 pub struct VaultState {
@@ -197,4 +214,10 @@ pub struct VaultState {
 // implementing space for vaultstate
 impl Space for VaultState {
     const INIT_SPACE: usize = 1 + 1;
+}
+
+#[error_code]
+pub enum VaultError {
+    #[msg("Insufficient funds for withdrawal")]
+    InsufficientFunds,
 }
